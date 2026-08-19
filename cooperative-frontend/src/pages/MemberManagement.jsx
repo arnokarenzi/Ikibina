@@ -1,5 +1,5 @@
 // src/pages/MemberManagement.jsx
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -47,7 +47,7 @@ export default function MemberManagement() {
     userRole,
   );
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     setMessage(null);
@@ -65,11 +65,19 @@ export default function MemberManagement() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    let isMounted = true;
+    Promise.resolve().then(() => {
+      if (isMounted) {
+        fetchData();
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchData]);
 
   const handleTurnOverride = async (e) => {
     e.preventDefault();

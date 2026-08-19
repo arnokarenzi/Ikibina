@@ -1,12 +1,12 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { Shield, Lock, Mail, AlertCircle } from 'lucide-react';
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { Shield, Lock, Mail, AlertCircle } from "lucide-react";
 
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const { login } = useAuth();
@@ -14,14 +14,17 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+    setError("");
     setLoading(true);
 
     try {
       await login(email, password);
-      navigate('/dashboard');
+      navigate("/dashboard");
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to authenticate. Please check your credentials.');
+      setError(
+        err.response?.data?.error ||
+          "Failed to authenticate. Please check your credentials.",
+      );
     } finally {
       setLoading(false);
     }
@@ -34,8 +37,12 @@ export default function Login() {
           <div className="inline-flex items-center justify-center w-12 h-12 bg-white/10 rounded-full mb-3">
             <Shield className="w-6 h-6 text-white" />
           </div>
-          <h1 className="text-2xl font-bold tracking-wide">Cooperative Portal</h1>
-          <p className="text-blue-200 text-sm mt-1">Ikibina Financial Management System</p>
+          <h1 className="text-2xl font-bold tracking-wide">
+            Cooperative Portal
+          </h1>
+          <p className="text-blue-200 text-sm mt-1">
+            Ikibina Financial Management System
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
@@ -85,11 +92,10 @@ export default function Login() {
             disabled={loading}
             className="w-full py-2.5 bg-coop-primary hover:bg-blue-900 text-white font-semibold rounded-lg shadow-md transition-colors duration-200 disabled:opacity-50"
           >
-            {loading ? 'Authenticating...' : 'Sign In'}
+            {loading ? "Authenticating..." : "Sign In"}
           </button>
         </form>
       </div>
     </div>
   );
-}	
-
+}

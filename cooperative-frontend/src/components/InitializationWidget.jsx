@@ -1,5 +1,5 @@
 // src/components/InitializationWidget.jsx
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import api from "../api/axios";
 import {
   AlertTriangle,
@@ -19,18 +19,26 @@ export default function InitializationWidget() {
   const [error, setError] = useState("");
   const [password, setPassword] = useState("");
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     try {
       const res = await api.get("/initialization/status");
       setStatusData(res.data);
     } catch (err) {
       console.error("Failed to fetch initialization status", err);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchStatus();
-  }, []);
+    let isMounted = true;
+    Promise.resolve().then(() => {
+      if (isMounted) {
+        fetchStatus();
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchStatus]);
 
   const handleRequestInit = async () => {
     if (

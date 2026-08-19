@@ -1,5 +1,5 @@
 // src/pages/Profile.jsx
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -48,7 +48,8 @@ export default function Profile() {
   }, [user]);
 
   const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
   const handleSubmit = async (e) => {
@@ -78,7 +79,7 @@ export default function Profile() {
         role: user.role,
       });
 
-      setSuccess(res.data.message);
+      setSuccess(res.data?.message || "Profile updated successfully.");
       setFormData((prev) => ({
         ...prev,
         current_password: "",
@@ -86,7 +87,9 @@ export default function Profile() {
         confirm_password: "",
       }));
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to update profile.");
+      setError(
+        err.response?.data?.error || err.message || "Failed to update profile.",
+      );
     } finally {
       setLoading(false);
     }

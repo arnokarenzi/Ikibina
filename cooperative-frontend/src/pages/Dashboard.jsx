@@ -1,5 +1,4 @@
-// src/pages/Dashboard.jsx
-import React, { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
@@ -9,10 +8,7 @@ import {
   Coins,
   PiggyBank,
   TrendingUp,
-  ArrowUpRight,
   RefreshCw,
-  FileCheck2,
-  Receipt,
   AlertCircle,
   Bell,
   X,
@@ -33,7 +29,7 @@ export default function Dashboard() {
     userRole,
   );
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -42,22 +38,26 @@ export default function Dashboard() {
           api.get("/ledger/balances"),
           api.get("/loans"),
         ]);
-        setBalances(balanceRes.data);
-        setLoans(loansRes.data);
-      } else {
+        setBalances(balanceRes.data ?? {});
+        setLoans(Array.isArray(loansRes.data) ? loansRes.data : []);
+      } else if (user?.id) {
         const response = await api.get(`/members/${user.id}/summary`);
-        setPersonalStats(response.data);
+        setPersonalStats(response.data ?? {});
       }
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to connect to backend.");
+      setError(
+        err?.response?.data?.error ||
+          err?.message ||
+          "Failed to connect to backend.",
+      );
     } finally {
       setLoading(false);
     }
-  };
+  }, [isCommittee, user?.id]);
 
   useEffect(() => {
     fetchDashboardData();
-  }, [isCommittee]);
+  }, [fetchDashboardData]);
 
   const formatCurrency = (val) => `${Number(val || 0).toLocaleString()} RWF`;
 

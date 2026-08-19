@@ -1,7 +1,7 @@
 // src/pages/LedgerAudit.jsx
-import React, { useState, useEffect } from 'react';
-import api from '../api/axios';
-import { BookOpen, RefreshCw, AlertCircle, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
+import { useState, useEffect } from "react";
+import api from "../api/axios";
+import { BookOpen, RefreshCw, AlertCircle } from "lucide-react";
 
 export default function LedgerAudit() {
   const [entries, setEntries] = useState([]);
@@ -12,10 +12,16 @@ export default function LedgerAudit() {
     setLoading(true);
     setError(null);
     try {
-      const response = await api.get('/ledger/entries');
-      setEntries(Array.isArray(response.data) ? response.data : []);
+      const response = await api.get("/ledger/entries");
+      setEntries(
+        Array.isArray(response.data)
+          ? response.data
+          : response.data?.entries || [],
+      );
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to load ledger audit trail.');
+      setError(
+        err.response?.data?.error || "Failed to load ledger audit trail.",
+      );
     } finally {
       setLoading(false);
     }
@@ -35,8 +41,12 @@ export default function LedgerAudit() {
             <BookOpen className="w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Double-Entry Audit Logs</h1>
-            <p className="text-sm text-slate-500 mt-0.5">Immutable financial transaction trail across all accounts.</p>
+            <h1 className="text-2xl font-bold text-slate-900">
+              Double-Entry Audit Logs
+            </h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Immutable financial transaction trail across all accounts.
+            </p>
           </div>
         </div>
         <button
@@ -44,7 +54,7 @@ export default function LedgerAudit() {
           disabled={loading}
           className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-sm rounded-lg transition-colors"
         >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           Refresh Ledger
         </button>
       </div>
@@ -73,31 +83,52 @@ export default function LedgerAudit() {
             <tbody className="divide-y divide-slate-100 text-sm">
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="py-8 text-center text-slate-500">Loading ledger entries...</td>
+                  <td colSpan="7" className="py-8 text-center text-slate-500">
+                    Loading ledger entries...
+                  </td>
                 </tr>
               ) : entries.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="py-8 text-center text-slate-500">No audit entries found.</td>
+                  <td colSpan="7" className="py-8 text-center text-slate-500">
+                    No audit entries found.
+                  </td>
                 </tr>
               ) : (
                 entries.map((entry) => (
-                  <tr key={entry.id} className="hover:bg-slate-50/80 transition-colors font-mono text-xs">
-                    <td className="py-3.5 px-4 font-bold text-slate-700">#{entry.id}</td>
+                  <tr
+                    key={
+                      entry.id ??
+                      `${entry.created_at}-${entry.transaction_type}-${entry.amount}`
+                    }
+                    className="hover:bg-slate-50/80 transition-colors font-mono text-xs"
+                  >
+                    <td className="py-3.5 px-4 font-bold text-slate-700">
+                      #{entry.id}
+                    </td>
                     <td className="py-3.5 px-4">
                       <span className="px-2 py-1 bg-slate-100 text-slate-800 rounded font-semibold">
                         {entry.transaction_type}
                       </span>
                     </td>
-                    <td className="py-3.5 px-4 text-emerald-700 font-semibold">{entry.debit_account}</td>
-                    <td className="py-3.5 px-4 text-red-700 font-semibold">{entry.credit_account}</td>
+                    <td className="py-3.5 px-4 text-emerald-700 font-semibold">
+                      {entry.debit_account}
+                    </td>
+                    <td className="py-3.5 px-4 text-red-700 font-semibold">
+                      {entry.credit_account}
+                    </td>
                     <td className="py-3.5 px-4 text-right font-bold text-slate-900 font-sans">
                       {formatCurrency(entry.amount)}
                     </td>
-                    <td className="py-3.5 px-4 text-slate-600 font-sans max-w-xs truncate" title={entry.description}>
-                      {entry.description || 'N/A'}
+                    <td
+                      className="py-3.5 px-4 text-slate-600 font-sans max-w-xs truncate"
+                      title={entry.description}
+                    >
+                      {entry.description || "N/A"}
                     </td>
                     <td className="py-3.5 px-4 text-slate-500">
-                      {entry.created_at ? new Date(entry.created_at).toLocaleString() : 'N/A'}
+                      {entry.created_at
+                        ? new Date(entry.created_at).toLocaleString()
+                        : "N/A"}
                     </td>
                   </tr>
                 ))
