@@ -9,6 +9,7 @@ require('./config/db');
 
 // Import Cron Engine
 const initializeCronJobs = require('./jobs/cronJobs');
+const { handleCronJob } = require('./controllers/cronController');
 
 const app = express();
 
@@ -38,6 +39,8 @@ app.use('/api/initialization', initializationRoutes);
 app.get('/', (req, res) => {
   res.json({ message: 'Cooperative Management API is running.' });
 });
+
+app.get('/api/cron', handleCronJob);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
