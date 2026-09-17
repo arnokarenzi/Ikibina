@@ -36,6 +36,11 @@ app.use('/api/loans', loanRoutes);
 app.use('/api/ledger', ledgerRoutes);
 app.use('/api/initialization', initializationRoutes);
 
+// Lightweight ping route to keep the Render container warm
+app.get('/api/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
 app.get('/', (req, res) => {
   res.json({ message: 'Cooperative Management API is running.' });
 });

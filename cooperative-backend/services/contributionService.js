@@ -116,6 +116,21 @@ static async executeDaily4PMCutoff(targetDate) {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
+// 1. IDEMPOTENCY CHECK: Has cutoff already run for this date?
+    const [disbursedCheck] = await connection.query(
+      'SELECT COUNT(*) as count FROM payout_cycles WHERE payout_date = ? AND status = ?',
+      [targetDate, 'DISBURSED']
+    );
+
+    if (disbursedCheck[0].count > 0) {
+      await connection.rollback();
+      return {
+        success: true,
+        alreadyProcessed: true,
+        message: `Cutoff for ${targetDate} has already been processed. Skipped duplicate run.`
+      };
+    }
+
     // 1. Use parameter binding (?) for status = 'PAID'
     const [paidRecords] = await connection.query(
       'SELECT member_id FROM daily_contributions WHERE contribution_date = ? AND status = ?', 
