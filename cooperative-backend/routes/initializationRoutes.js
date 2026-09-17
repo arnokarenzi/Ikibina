@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const { requireRole } = require("../middleware/auth");
 
 const COMMITTEE_ROLES = [
@@ -24,7 +24,8 @@ router.post("/request", requireRole(COMMITTEE_ROLES), async (req, res) => {
       "SELECT * FROM project_initialization_requests WHERE status = 'PENDING'",
     );
     if (existing.length > 0) {
-      await connection.release();
+      await connection.rollback();
+      connection.release();
       return res.status(400).json({
         error:
           "An initialization request is already pending committee approval.",
@@ -63,7 +64,7 @@ router.post("/request", requireRole(COMMITTEE_ROLES), async (req, res) => {
 router.get("/status", requireRole(COMMITTEE_ROLES), async (req, res) => {
   try {
     const [requests] = await pool.query(
-      "SELECT r.*, m.full_name as requester_name FROM project_initialization_requests r JOIN members m ON r.requested_by = m.id WHERE r.status = 'PENDING'",
+      "SELECT r.*, m.full_name as requester_name FROM project_initialization_requests r JOIN members m ON r.requested_by = m.id WHERE r.status = 'PENDING' ORDER BY r.created_at DESC",
     );
 
     if (requests.length === 0) {
@@ -86,8 +87,6 @@ router.get("/status", requireRole(COMMITTEE_ROLES), async (req, res) => {
 router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
   const requestId = req.params.id;
   const memberId = req.user.id;
-
-  // Safe extraction to prevent crashes if req.body is undefined
   const password = req.body?.password;
 
   if (!password) {
@@ -108,7 +107,8 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
     );
 
     if (userRows.length === 0 || !userRows[0].password) {
-      await connection.release();
+      await connection.rollback();
+      connection.release();
       return res.status(404).json({
         error:
           "Member password hash not found. Please run 'node seed.js' to initialize member accounts.",
@@ -120,7 +120,8 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
       userRows[0].password,
     );
     if (!isPasswordValid) {
-      await connection.release();
+      await connection.rollback();
+      connection.release();
       return res
         .status(401)
         .json({ error: "Invalid password. Authorization denied." });
@@ -132,7 +133,8 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
       [requestId],
     );
     if (reqRows.length === 0) {
-      await connection.release();
+      await connection.rollback();
+      connection.release();
       return res
         .status(404)
         .json({ error: "Pending initialization request not found." });
@@ -146,7 +148,8 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
       );
     } catch (err) {
       if (err.code === "ER_DUP_ENTRY") {
-        await connection.release();
+        await connection.rollback();
+        connection.release();
         return res.status(400).json({
           error: "You have already approved this initialization request.",
         });
@@ -161,7 +164,7 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
     );
     const totalApprovals = approvalCountRows[0].count;
 
-    // If 3 approvals are reached, execute the reset transaction!
+    // If 3 approvals are reached, execute the full reset and initialization transaction
     if (totalApprovals >= 3) {
       // Temporarily disable foreign key checks to safely clear all financial tables
       await connection.query("SET FOREIGN_KEY_CHECKS = 0");
@@ -177,16 +180,37 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
 
       await connection.query("SET FOREIGN_KEY_CHECKS = 1");
 
-      // Automatically populate rotation queue with active members in randomized order for Cycle 1
+      // Fetch active members in randomized order for Cycle 1
       const [activeMembers] = await connection.query(
         "SELECT id FROM members WHERE status = 'ACTIVE' ORDER BY RAND()",
       );
 
+      // Populate rotation_queue for Cycle 1
       for (let i = 0; i < activeMembers.length; i++) {
         await connection.query(
           `INSERT INTO rotation_queue (cycle_id, member_id, turn_position, bid_amount, status) 
            VALUES (1, ?, ?, 0.00, 'PENDING')`,
           [activeMembers[i].id, i + 1],
+        );
+      }
+
+      // Populate payout_cycles schedule for Cycle 1 (15-day cycle, 2 members per day receiving 75,000 RWF)
+      if (activeMembers.length > 0) {
+        const startDate = new Date();
+        const scheduleEntries = [];
+
+        for (let i = 0; i < activeMembers.length; i++) {
+          const dayOffset = Math.floor(i / 2);
+          const payoutDate = new Date(startDate);
+          payoutDate.setDate(payoutDate.getDate() + dayOffset);
+          const dateStr = payoutDate.toISOString().split("T")[0];
+
+          scheduleEntries.push([1, dateStr, activeMembers[i].id, 75000.00, "SCHEDULED"]);
+        }
+
+        await connection.query(
+          `INSERT INTO payout_cycles (cycle_number, payout_date, recipient_member_id, amount, status) VALUES ?`,
+          [scheduleEntries],
         );
       }
 
@@ -200,7 +224,7 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
       connection.release();
       return res.json({
         message:
-          "Project successfully initialized! Balances reset and rotation queue populated randomly.",
+          "Project successfully initialized! Balances reset, rotation queue randomized, and payout schedule populated for Cycle 1.",
         executed: true,
       });
     }
