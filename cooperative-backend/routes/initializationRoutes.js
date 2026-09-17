@@ -13,44 +13,47 @@ const COMMITTEE_ROLES = [
   "ADMIN",
 ];
 
+// Helper function to format local YYYY-MM-DD date (prevents UTC timezone shifts)
+const getLocalDateString = (dateObj = new Date()) => {
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, "0");
+  const day = String(dateObj.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 // 1. Request Project Initialization (Committee only)
 router.post("/request", requireRole(COMMITTEE_ROLES), async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
-    // Check if there's already a pending request
     const [existing] = await connection.query(
-      "SELECT * FROM project_initialization_requests WHERE status = 'PENDING'",
+      "SELECT * FROM project_initialization_requests WHERE status = 'PENDING'"
     );
     if (existing.length > 0) {
       await connection.rollback();
       connection.release();
       return res.status(400).json({
-        error:
-          "An initialization request is already pending committee approval.",
+        error: "An initialization request is already pending committee approval.",
       });
     }
 
-    // Create the request
     const [result] = await connection.query(
       "INSERT INTO project_initialization_requests (requested_by, status) VALUES (?, ?)",
-      [req.user.id, "PENDING"],
+      [req.user.id, "PENDING"]
     );
     const requestId = result.insertId;
 
-    // Automatically record the requester's approval as the first approval
     await connection.query(
       "INSERT INTO initialization_approvals (request_id, member_id) VALUES (?, ?)",
-      [requestId, req.user.id],
+      [requestId, req.user.id]
     );
 
     await connection.commit();
     connection.release();
 
     res.status(201).json({
-      message:
-        "Initialization request created successfully. Waiting for other committee members to approve.",
+      message: "Initialization request created. Awaiting remaining committee approvals.",
       requestId,
     });
   } catch (error) {
@@ -60,39 +63,14 @@ router.post("/request", requireRole(COMMITTEE_ROLES), async (req, res) => {
   }
 });
 
-// 2. Get Pending Initialization Status & Approvals
-router.get("/status", requireRole(COMMITTEE_ROLES), async (req, res) => {
-  try {
-    const [requests] = await pool.query(
-      "SELECT r.*, m.full_name as requester_name FROM project_initialization_requests r JOIN members m ON r.requested_by = m.id WHERE r.status = 'PENDING' ORDER BY r.created_at DESC",
-    );
-
-    if (requests.length === 0) {
-      return res.json({ pendingRequest: null, approvals: [] });
-    }
-
-    const request = requests[0];
-    const [approvals] = await pool.query(
-      "SELECT a.*, m.full_name FROM initialization_approvals a JOIN members m ON a.member_id = m.id WHERE a.request_id = ?",
-      [request.id],
-    );
-
-    res.json({ pendingRequest: request, approvals });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 3. Approve Initialization Request (Requires password verification & 3 total committee approvals)
+// 2. Approve Initialization Request & Execute Clean Reset
 router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
   const requestId = req.params.id;
   const memberId = req.user.id;
   const password = req.body?.password;
 
   if (!password) {
-    return res
-      .status(400)
-      .json({ error: "Password is required for security verification." });
+    return res.status(400).json({ error: "Password is required for verification." });
   }
 
   const connection = await pool.getConnection();
@@ -100,75 +78,59 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // Verify committee member's password hash from database
     const [userRows] = await connection.query(
       "SELECT password_hash AS password FROM members WHERE id = ?",
-      [memberId],
+      [memberId]
     );
 
     if (userRows.length === 0 || !userRows[0].password) {
       await connection.rollback();
       connection.release();
-      return res.status(404).json({
-        error:
-          "Member password hash not found. Please run 'node seed.js' to initialize member accounts.",
-      });
+      return res.status(404).json({ error: "Member password hash not found." });
     }
 
-    const isPasswordValid = await bcrypt.compare(
-      password,
-      userRows[0].password,
-    );
+    const isPasswordValid = await bcrypt.compare(password, userRows[0].password);
     if (!isPasswordValid) {
       await connection.rollback();
       connection.release();
-      return res
-        .status(401)
-        .json({ error: "Invalid password. Authorization denied." });
+      return res.status(401).json({ error: "Invalid password. Authorization denied." });
     }
 
-    // Check if request is still pending
     const [reqRows] = await connection.query(
       "SELECT * FROM project_initialization_requests WHERE id = ? AND status = 'PENDING'",
-      [requestId],
+      [requestId]
     );
     if (reqRows.length === 0) {
       await connection.rollback();
       connection.release();
-      return res
-        .status(404)
-        .json({ error: "Pending initialization request not found." });
+      return res.status(404).json({ error: "Pending initialization request not found." });
     }
 
-    // Insert approval (will throw duplicate entry error via UNIQUE KEY if already approved by this user)
     try {
       await connection.query(
         "INSERT INTO initialization_approvals (request_id, member_id) VALUES (?, ?)",
-        [requestId, memberId],
+        [requestId, memberId]
       );
     } catch (err) {
       if (err.code === "ER_DUP_ENTRY") {
         await connection.rollback();
         connection.release();
-        return res.status(400).json({
-          error: "You have already approved this initialization request.",
-        });
+        return res.status(400).json({ error: "You have already approved this request." });
       }
       throw err;
     }
 
-    // Count total approvals
     const [approvalCountRows] = await connection.query(
       "SELECT COUNT(*) as count FROM initialization_approvals WHERE request_id = ?",
-      [requestId],
+      [requestId]
     );
     const totalApprovals = approvalCountRows[0].count;
 
-    // If 3 approvals are reached, execute the full reset and initialization transaction
+    // Execute hard reset when 3 committee approvals are registered
     if (totalApprovals >= 3) {
-      // Temporarily disable foreign key checks to safely clear all financial tables
       await connection.query("SET FOREIGN_KEY_CHECKS = 0");
 
+      // Full clear of financial and execution state
       await connection.query("DELETE FROM daily_contributions");
       await connection.query("DELETE FROM loan_repayments");
       await connection.query("DELETE FROM loan_guarantors");
@@ -180,21 +142,21 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
 
       await connection.query("SET FOREIGN_KEY_CHECKS = 1");
 
-      // Fetch active members in randomized order for Cycle 1
       const [activeMembers] = await connection.query(
-        "SELECT id FROM members WHERE status = 'ACTIVE' ORDER BY RAND()",
+        "SELECT id FROM members WHERE status = 'ACTIVE' ORDER BY RAND()"
       );
 
-      // Populate rotation_queue for Cycle 1
+      // Seed rotation queue for Cycle 1
       for (let i = 0; i < activeMembers.length; i++) {
+        const turnStatus = i < 2 ? "CURRENT_TURN" : "PENDING";
         await connection.query(
           `INSERT INTO rotation_queue (cycle_id, member_id, turn_position, bid_amount, status) 
-           VALUES (1, ?, ?, 0.00, 'PENDING')`,
-          [activeMembers[i].id, i + 1],
+           VALUES (1, ?, ?, 0.00, ?)`,
+          [activeMembers[i].id, i + 1, turnStatus]
         );
       }
 
-      // Populate payout_cycles schedule for Cycle 1 (15-day cycle, 2 members per day receiving 75,000 RWF)
+      // Seed payout_cycles starting from local today
       if (activeMembers.length > 0) {
         const startDate = new Date();
         const scheduleEntries = [];
@@ -203,28 +165,26 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
           const dayOffset = Math.floor(i / 2);
           const payoutDate = new Date(startDate);
           payoutDate.setDate(payoutDate.getDate() + dayOffset);
-          const dateStr = payoutDate.toISOString().split("T")[0];
+          const dateStr = getLocalDateString(payoutDate);
 
           scheduleEntries.push([1, dateStr, activeMembers[i].id, 75000.00, "SCHEDULED"]);
         }
 
         await connection.query(
           `INSERT INTO payout_cycles (cycle_number, payout_date, recipient_member_id, amount, status) VALUES ?`,
-          [scheduleEntries],
+          [scheduleEntries]
         );
       }
 
-      // Mark request as executed
       await connection.query(
         "UPDATE project_initialization_requests SET status = 'EXECUTED' WHERE id = ?",
-        [requestId],
+        [requestId]
       );
 
       await connection.commit();
       connection.release();
       return res.json({
-        message:
-          "Project successfully initialized! Balances reset, rotation queue randomized, and payout schedule populated for Cycle 1.",
+        message: "Project successfully initialized! Ledger, daily contributions, and cutoff status completely reset.",
         executed: true,
       });
     }
@@ -232,7 +192,7 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
     await connection.commit();
     connection.release();
     res.json({
-      message: `Approval recorded successfully. Total approvals: ${totalApprovals}/3.`,
+      message: `Approval recorded. Total approvals: ${totalApprovals}/3. Hard reset triggers on 3rd approval.`,
       executed: false,
       totalApprovals,
     });
