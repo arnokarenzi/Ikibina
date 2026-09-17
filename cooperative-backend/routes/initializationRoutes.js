@@ -63,14 +63,44 @@ router.post("/request", requireRole(COMMITTEE_ROLES), async (req, res) => {
   }
 });
 
-// 2. Approve Initialization Request & Execute Clean Reset
+// 2. Get Pending Initialization Status & Approvals (Restored for Committee Visibility)
+router.get("/status", requireRole(COMMITTEE_ROLES), async (req, res) => {
+  try {
+    const [requests] = await pool.query(
+      `SELECT r.*, m.full_name AS requester_name 
+       FROM project_initialization_requests r 
+       JOIN members m ON r.requested_by = m.id 
+       WHERE r.status = 'PENDING' 
+       ORDER BY r.created_at DESC`
+    );
+
+    if (requests.length === 0) {
+      return res.json({ pendingRequest: null, approvals: [] });
+    }
+
+    const request = requests[0];
+    const [approvals] = await pool.query(
+      `SELECT a.*, m.full_name 
+       FROM initialization_approvals a 
+       JOIN members m ON a.member_id = m.id 
+       WHERE a.request_id = ?`,
+      [request.id]
+    );
+
+    res.json({ pendingRequest: request, approvals });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. Approve Initialization Request & Execute Clean Reset
 router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
   const requestId = req.params.id;
   const memberId = req.user.id;
   const password = req.body?.password;
 
   if (!password) {
-    return res.status(400).json({ error: "Password is required for verification." });
+    return res.status(400).json({ error: "Password is required for security verification." });
   }
 
   const connection = await pool.getConnection();
@@ -126,11 +156,10 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
     );
     const totalApprovals = approvalCountRows[0].count;
 
-    // Execute hard reset when 3 committee approvals are registered
+    // Hard reset triggers on 3rd approval
     if (totalApprovals >= 3) {
       await connection.query("SET FOREIGN_KEY_CHECKS = 0");
 
-      // Full clear of financial and execution state
       await connection.query("DELETE FROM daily_contributions");
       await connection.query("DELETE FROM loan_repayments");
       await connection.query("DELETE FROM loan_guarantors");
@@ -146,7 +175,7 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
         "SELECT id FROM members WHERE status = 'ACTIVE' ORDER BY RAND()"
       );
 
-      // Seed rotation queue for Cycle 1
+      // Seed rotation_queue for Cycle 1
       for (let i = 0; i < activeMembers.length; i++) {
         const turnStatus = i < 2 ? "CURRENT_TURN" : "PENDING";
         await connection.query(
@@ -192,7 +221,7 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
     await connection.commit();
     connection.release();
     res.json({
-      message: `Approval recorded. Total approvals: ${totalApprovals}/3. Hard reset triggers on 3rd approval.`,
+      message: `Approval recorded successfully. Total approvals: ${totalApprovals}/3.`,
       executed: false,
       totalApprovals,
     });
@@ -203,4 +232,38 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
   }
 });
 
+// 4. Cancel/Void Pending Initialization Request
+router.post("/:id/cancel", requireRole(COMMITTEE_ROLES), async (req, res) => {
+  const requestId = req.params.id;
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const [rows] = await connection.query(
+      "SELECT * FROM project_initialization_requests WHERE id = ? AND status = 'PENDING'",
+      [requestId]
+    );
+
+    if (rows.length === 0) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ error: "No pending initialization request found to cancel." });
+    }
+
+    await connection.query("DELETE FROM initialization_approvals WHERE request_id = ?", [requestId]);
+    await connection.query("UPDATE project_initialization_requests SET status = 'CANCELLED' WHERE id = ?", [requestId]);
+
+    await connection.commit();
+    connection.release();
+
+    res.json({ message: "Pending initialization request successfully cancelled." });
+  } catch (error) {
+    await connection.rollback();
+    connection.release();
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
+
