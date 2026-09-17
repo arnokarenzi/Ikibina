@@ -37,7 +37,7 @@ class ContributionService {
       }
 
       if (isReserveReplenishment) {
-        // Reimburses RESERVE_CAPITAL for the 5,100 RWF float advanced during 4:00 PM cutoff[cite: 13]
+        // Reimburses RESERVE_CAPITAL for the float advanced during 4:00 PM cutoff[cite: 13]
         await LedgerService.recordEntry(connection, {
           debitAccount: 'CASH', creditAccount: 'RESERVE_CAPITAL', amount: 5100.00,
           transactionType: 'RESERVE_REPLENISHMENT', referenceId: memberId, 
@@ -58,7 +58,7 @@ class ContributionService {
         });
       }
 
-      // Posts penalty/late fee income into RESERVE_CAPITAL when paid[cite: 13, 20]
+      // Posts penalty/late fee income into RESERVE_CAPITAL when paid[cite: 13]
       if (penaltyAmount > 0) {
         await LedgerService.recordEntry(connection, {
           debitAccount: 'CASH', creditAccount: 'RESERVE_CAPITAL', amount: penaltyAmount,
@@ -110,114 +110,133 @@ class ContributionService {
     }
   }
 
-static async executeDaily4PMCutoff(targetDate) {
-  let connection;
-  try {
-    connection = await pool.getConnection();
-    await connection.beginTransaction();
+  static async executeDaily4PMCutoff(targetDate) {
+    let connection;
+    try {
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
 
-// 1. IDEMPOTENCY CHECK: Has cutoff already run for this date?
-    const [disbursedCheck] = await connection.query(
-      'SELECT COUNT(*) as count FROM payout_cycles WHERE payout_date = ? AND status = ?',
-      [targetDate, 'DISBURSED']
-    );
-
-    if (disbursedCheck[0].count > 0) {
-      await connection.rollback();
-      return {
-        success: true,
-        alreadyProcessed: true,
-        message: `Cutoff for ${targetDate} has already been processed. Skipped duplicate run.`
-      };
-    }
-
-    // 1. Use parameter binding (?) for status = 'PAID'
-    const [paidRecords] = await connection.query(
-      'SELECT member_id FROM daily_contributions WHERE contribution_date = ? AND status = ?', 
-      [targetDate, 'PAID']
-    );
-    const paidMemberIds = new Set(paidRecords.map(r => r.member_id));
-    const [allMembers] = await connection.query('SELECT id FROM members');
-    const unpaidMembers = allMembers.filter(m => !paidMemberIds.has(m.id));
-    const shortfallsCount = unpaidMembers.length;
-
-    if (shortfallsCount > 0 && shortfallsCount <= 3) {
-      const floatAmount = shortfallsCount * 5100.00;
-      await LedgerService.recordEntry(connection, {
-        debitAccount: 'RESERVE_CAPITAL', creditAccount: 'PAYOUT_POOL', amount: floatAmount,
-        transactionType: 'RESERVE_FLOAT', description: `Reserve Capital Float advance for ${shortfallsCount} missed contributions on ${targetDate}`
-      });
-
-      for (const member of unpaidMembers) {
-        await connection.query(
-          `INSERT INTO daily_contributions (member_id, contribution_date, amount_paid, is_late, late_fee_applied, status) VALUES (?, ?, 0.00, TRUE, 500.00, 'COVERED_BY_RESERVE')`,
-          [member.id, targetDate]
-        );
-      }
-    } else if (shortfallsCount > 3) {
-      throw new Error(`Execution halted: ${shortfallsCount} members missed contributions. Reserve float limit is 3.`);
-    }
-
-    // 2. Use parameter binding (?) for status = 'SCHEDULED'
-    const [scheduledPayouts] = await connection.query(
-      'SELECT * FROM payout_cycles WHERE payout_date = ? AND status = ?', 
-      [targetDate, 'SCHEDULED']
-    );
-
-    for (const payout of scheduledPayouts) {
-      let finalPayoutAmount = payout.amount;
-      let seizureAmount = 0;
-      
-      const [defaultedGuarantees] = await connection.query(
-        "SELECT lg.id, lg.guaranteed_amount FROM loan_guarantors lg JOIN loans l ON lg.loan_id = l.id WHERE lg.guarantor_member_id = ? AND l.status = 'DEFAULTED'", 
-        [payout.recipient_member_id]
+      // 1. IDEMPOTENCY CHECK: Has cutoff already run for this date?
+      const [disbursedCheck] = await connection.query(
+        'SELECT COUNT(*) as count FROM payout_cycles WHERE payout_date = ? AND status = ?',
+        [targetDate, 'DISBURSED']
       );
 
-      for (const badDebt of defaultedGuarantees) {
-        if (finalPayoutAmount > 0) {
-          const deduction = Math.min(finalPayoutAmount, badDebt.guaranteed_amount);
-          finalPayoutAmount -= deduction;
-          seizureAmount += deduction;
+      if (disbursedCheck[0].count > 0) {
+        await connection.rollback();
+        return {
+          success: true,
+          alreadyProcessed: true,
+          message: `Cutoff for ${targetDate} has already been processed. Skipped duplicate run.`
+        };
+      }
 
+      // Check for paid and unpaid members on the target date
+      const [paidRecords] = await connection.query(
+        'SELECT member_id FROM daily_contributions WHERE contribution_date = ? AND status = ?', 
+        [targetDate, 'PAID']
+      );
+      const paidMemberIds = new Set(paidRecords.map(r => r.member_id));
+      const [allMembers] = await connection.query('SELECT id FROM members');
+      const unpaidMembers = allMembers.filter(m => !paidMemberIds.has(m.id));
+      const shortfallsCount = unpaidMembers.length;
+
+      if (shortfallsCount > 0 && shortfallsCount <= 3) {
+        const floatAmount = shortfallsCount * 5100.00;
+        await LedgerService.recordEntry(connection, {
+          debitAccount: 'RESERVE_CAPITAL', creditAccount: 'PAYOUT_POOL', amount: floatAmount,
+          transactionType: 'RESERVE_FLOAT', description: `Reserve Capital Float advance for ${shortfallsCount} missed contributions on ${targetDate}`
+        });
+
+        for (const member of unpaidMembers) {
           await connection.query(
-            "UPDATE loan_guarantors SET guaranteed_amount = guaranteed_amount - ?, status = 'SEIZED' WHERE id = ?", 
-            [deduction, badDebt.id]
+            `INSERT INTO daily_contributions (member_id, contribution_date, amount_paid, is_late, late_fee_applied, status) VALUES (?, ?, 0.00, TRUE, 500.00, 'COVERED_BY_RESERVE')`,
+            [member.id, targetDate]
           );
         }
+      } else if (shortfallsCount > 3) {
+        throw new Error(`Execution halted: ${shortfallsCount} members missed contributions. Reserve float limit is 3.`);
       }
 
-      if (seizureAmount > 0) {
-        await LedgerService.recordEntry(connection, {
-          debitAccount: 'PAYOUT_POOL', creditAccount: 'LOAN_RECEIVABLE', amount: seizureAmount,
-          transactionType: 'TREASURY_SEIZURE', referenceId: payout.recipient_member_id, 
-          description: `Automated seizure of default debt from Member ID ${payout.recipient_member_id} rotational payout`
-        });
-      }
-
-      if (finalPayoutAmount > 0) {
-        await LedgerService.recordEntry(connection, {
-          debitAccount: 'PAYOUT_POOL', creditAccount: 'CASH', amount: finalPayoutAmount,
-          transactionType: 'ROTATIONAL_PAYOUT', referenceId: payout.recipient_member_id, 
-          description: `Daily Rotational Payout to Member ID ${payout.recipient_member_id}`
-        });
-      }
-
-      // 3. Use parameter binding (?) for status = 'DISBURSED'
-      await connection.query(
-        'UPDATE payout_cycles SET status = ?, processed_at = CURRENT_TIMESTAMP WHERE id = ?', 
-        ['DISBURSED', payout.id]
+      // Retrieve scheduled payouts for the target date
+      const [scheduledPayouts] = await connection.query(
+        'SELECT * FROM payout_cycles WHERE payout_date = ? AND status = ?', 
+        [targetDate, 'SCHEDULED']
       );
-    }
 
-    await connection.commit();
-    return { success: true, message: `4:00 PM Cutoff executed for ${targetDate}. Payouts Disbursed: ${scheduledPayouts.length}` };
-  } catch (error) {
-    if (connection) await connection.rollback();
-    throw error;
-  } finally {
-    if (connection) connection.release();
+      for (const payout of scheduledPayouts) {
+        let finalPayoutAmount = payout.amount;
+        let seizureAmount = 0;
+        
+        const [defaultedGuarantees] = await connection.query(
+          "SELECT lg.id, lg.guaranteed_amount FROM loan_guarantors lg JOIN loans l ON lg.loan_id = l.id WHERE lg.guarantor_member_id = ? AND l.status = 'DEFAULTED'", 
+          [payout.recipient_member_id]
+        );
+
+        for (const badDebt of defaultedGuarantees) {
+          if (finalPayoutAmount > 0) {
+            const deduction = Math.min(finalPayoutAmount, badDebt.guaranteed_amount);
+            finalPayoutAmount -= deduction;
+            seizureAmount += deduction;
+
+            await connection.query(
+              "UPDATE loan_guarantors SET guaranteed_amount = guaranteed_amount - ?, status = 'SEIZED' WHERE id = ?", 
+              [deduction, badDebt.id]
+            );
+          }
+        }
+
+        if (seizureAmount > 0) {
+          await LedgerService.recordEntry(connection, {
+            debitAccount: 'PAYOUT_POOL', creditAccount: 'LOAN_RECEIVABLE', amount: seizureAmount,
+            transactionType: 'TREASURY_SEIZURE', referenceId: payout.recipient_member_id, 
+            description: `Automated seizure of default debt from Member ID ${payout.recipient_member_id} rotational payout`
+          });
+        }
+
+        if (finalPayoutAmount > 0) {
+          await LedgerService.recordEntry(connection, {
+            debitAccount: 'PAYOUT_POOL', creditAccount: 'CASH', amount: finalPayoutAmount,
+            transactionType: 'ROTATIONAL_PAYOUT', referenceId: payout.recipient_member_id, 
+            description: `Daily Rotational Payout to Member ID ${payout.recipient_member_id}`
+          });
+        }
+
+        // 1. Mark payout cycle record as DISBURSED
+        await connection.query(
+          'UPDATE payout_cycles SET status = ?, processed_at = CURRENT_TIMESTAMP WHERE id = ?', 
+          ['DISBURSED', payout.id]
+        );
+
+        // 2. Sync ROSCA queue status to PAID_OUT for recipient
+        await connection.query(
+          `UPDATE rotation_queue 
+           SET status = 'PAID_OUT' 
+           WHERE member_id = ? AND cycle_id = ?`,
+          [payout.recipient_member_id, payout.cycle_number]
+        );
+      }
+
+      // 3. Mark upcoming next scheduled recipients as CURRENT_TURN
+      await connection.query(
+        `UPDATE rotation_queue rq
+         JOIN payout_cycles pc ON rq.member_id = pc.recipient_member_id AND rq.cycle_id = pc.cycle_number
+         SET rq.status = 'CURRENT_TURN'
+         WHERE pc.status = 'SCHEDULED' AND pc.payout_date > ? AND rq.status = 'PENDING'
+         ORDER BY pc.payout_date ASC
+         LIMIT 2`,
+        [targetDate]
+      );
+
+      await connection.commit();
+      return { success: true, message: `4:00 PM Cutoff executed for ${targetDate}. Payouts Disbursed: ${scheduledPayouts.length}` };
+    } catch (error) {
+      if (connection) await connection.rollback();
+      throw error;
+    } finally {
+      if (connection) connection.release();
+    }
   }
-}
 }
 
 module.exports = ContributionService;
