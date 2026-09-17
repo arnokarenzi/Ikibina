@@ -219,15 +219,27 @@ class ContributionService {
         );
       }
 
+    // 1. Fetch the IDs of the next two scheduled turns
+    const [nextTurns] = await connection.query(
+      `SELECT rq.id 
+       FROM rotation_queue rq
+       JOIN payout_cycles pc ON rq.member_id = pc.recipient_member_id AND rq.cycle_id = pc.cycle_number
+       WHERE pc.status = 'SCHEDULED' AND pc.payout_date > ? AND rq.status = 'PENDING'
+       ORDER BY pc.payout_date ASC
+       LIMIT 2`,
+      [targetDate]
+    );
+
+    // 2. Update those specific IDs cleanly
+    if (nextTurns.length > 0) {
+      const turnIds = nextTurns.map((turn) => turn.id);
       await connection.query(
-        `UPDATE rotation_queue rq
-         JOIN payout_cycles pc ON rq.member_id = pc.recipient_member_id AND rq.cycle_id = pc.cycle_number
-         SET rq.status = 'CURRENT_TURN'
-         WHERE pc.status = 'SCHEDULED' AND pc.payout_date > ? AND rq.status = 'PENDING'
-         ORDER BY pc.payout_date ASC
-         LIMIT 2`,
-        [targetDate]
+        `UPDATE rotation_queue 
+         SET status = 'CURRENT_TURN' 
+         WHERE id IN (?)`,
+        [turnIds]
       );
+    }
 
       await connection.commit();
       return { success: true, message: `4:00 PM Cutoff executed for ${targetDate}. Payouts Disbursed: ${scheduledPayouts.length}` };
