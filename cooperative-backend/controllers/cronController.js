@@ -6,7 +6,7 @@ exports.handleCronJob = async (req, res) => {
   const { action, key } = req.query;
 
   // 1. Security Check: Require a secret key so strangers cannot trigger your cron routines
-  const CRON_SECRET = process.env.CRON_SECRET || "your_secret_key_here";
+  const CRON_SECRET = process.env.CRON_SECRET || "Kimironko";
   if (key !== CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized cron request." });
   }
