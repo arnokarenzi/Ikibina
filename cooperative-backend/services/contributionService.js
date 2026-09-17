@@ -2,6 +2,11 @@
 const pool = require('../config/db');
 const LedgerService = require('./ledgerService');
 
+// Helper function to extract CAT (Kigali UTC+2) YYYY-MM-DD date string
+const getLocalDateString = (dateObj = new Date()) => {
+  return new Date(dateObj).toLocaleDateString('sv-SE', { timeZone: 'Africa/Kigali' });
+};
+
 class ContributionService {
   
   static async recordMemberContribution(memberId, contributionDate, amountPaid = 5100.00) {
@@ -10,13 +15,15 @@ class ContributionService {
       connection = await pool.getConnection();
       await connection.beginTransaction();
 
+      const targetDate = contributionDate || getLocalDateString();
+
       const [existing] = await connection.query(
         'SELECT id, status, late_fee_applied FROM daily_contributions WHERE member_id = ? AND contribution_date = ?', 
-        [memberId, contributionDate]
+        [memberId, targetDate]
       );
 
       if (existing.length > 0 && existing[0].status === 'PAID') {
-        throw new Error(`Member ${memberId} has already paid for ${contributionDate}.`);
+        throw new Error(`Member ${memberId} has already paid for ${targetDate}.`);
       }
 
       const isReserveReplenishment = existing.length > 0 && existing[0].status === 'COVERED_BY_RESERVE';
@@ -32,38 +39,35 @@ class ContributionService {
       } else {
         await connection.query(
           `INSERT INTO daily_contributions (member_id, contribution_date, amount_paid, paid_at, status) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'PAID')`,
-          [memberId, contributionDate, amountPaid]
+          [memberId, targetDate, amountPaid]
         );
       }
 
       if (isReserveReplenishment) {
-        // Reimburses RESERVE_CAPITAL for the float advanced during 4:00 PM cutoff[cite: 13]
         await LedgerService.recordEntry(connection, {
           debitAccount: 'CASH', creditAccount: 'RESERVE_CAPITAL', amount: 5100.00,
           transactionType: 'RESERVE_REPLENISHMENT', referenceId: memberId, 
-          description: `Late contribution float reimbursement (${contributionDate}) - Member ${memberId}`
+          description: `Late contribution float reimbursement (${targetDate}) - Member ${memberId}`
         });
       } else {
-        // Normal daily contribution split[cite: 13]
         await LedgerService.recordEntry(connection, {
           debitAccount: 'CASH', creditAccount: 'PAYOUT_POOL', amount: payoutShare,
           transactionType: 'DAILY_CONTRIBUTION', referenceId: memberId, 
-          description: `Daily Contribution (${contributionDate}) - Member ${memberId} Payout Pool`
+          description: `Daily Contribution (${targetDate}) - Member ${memberId} Payout Pool`
         });
 
         await LedgerService.recordEntry(connection, {
           debitAccount: 'CASH', creditAccount: 'RESERVE_CAPITAL', amount: reserveShare,
           transactionType: 'DAILY_CONTRIBUTION', referenceId: memberId, 
-          description: `Daily Contribution (${contributionDate}) - Member ${memberId} Reserve Retention`
+          description: `Daily Contribution (${targetDate}) - Member ${memberId} Reserve Retention`
         });
       }
 
-      // Posts penalty/late fee income into RESERVE_CAPITAL when paid[cite: 13]
       if (penaltyAmount > 0) {
         await LedgerService.recordEntry(connection, {
           debitAccount: 'CASH', creditAccount: 'RESERVE_CAPITAL', amount: penaltyAmount,
           transactionType: 'PENALTY_FEE', referenceId: memberId, 
-          description: `Late contribution penalty fee (${contributionDate}) - Member ${memberId}`
+          description: `Late contribution penalty fee (${targetDate}) - Member ${memberId}`
         });
       }
 
@@ -86,11 +90,11 @@ class ContributionService {
       const [members] = await connection.query('SELECT id, member_number FROM members ORDER BY member_number ASC');
       if (members.length !== 30) throw new Error('System must have exactly 30 active members.');
 
-      let currentDate = new Date(startDate);
+      let currentDate = startDate ? new Date(startDate) : new Date();
       const scheduleEntries = [];
 
       for (let day = 0; day < 15; day++) {
-        const dateStr = currentDate.toISOString().split('T')[0];
+        const dateStr = getLocalDateString(currentDate);
         const memberA = members[day * 2];
         const memberB = members[day * 2 + 1];
 
@@ -110,13 +114,15 @@ class ContributionService {
     }
   }
 
-  static async executeDaily4PMCutoff(targetDate) {
+  static async executeDaily4PMCutoff(targetDateParam) {
     let connection;
     try {
       connection = await pool.getConnection();
       await connection.beginTransaction();
 
-      // 1. IDEMPOTENCY CHECK: Has cutoff already run for this date?
+      const targetDate = targetDateParam || getLocalDateString();
+
+      // DYNAMIC ENGINE LOCK CHECK: State is dynamically calculated from actual payout records
       const [disbursedCheck] = await connection.query(
         'SELECT COUNT(*) as count FROM payout_cycles WHERE payout_date = ? AND status = ?',
         [targetDate, 'DISBURSED']
@@ -131,7 +137,6 @@ class ContributionService {
         };
       }
 
-      // Check for paid and unpaid members on the target date
       const [paidRecords] = await connection.query(
         'SELECT member_id FROM daily_contributions WHERE contribution_date = ? AND status = ?', 
         [targetDate, 'PAID']
@@ -158,7 +163,6 @@ class ContributionService {
         throw new Error(`Execution halted: ${shortfallsCount} members missed contributions. Reserve float limit is 3.`);
       }
 
-      // Retrieve scheduled payouts for the target date
       const [scheduledPayouts] = await connection.query(
         'SELECT * FROM payout_cycles WHERE payout_date = ? AND status = ?', 
         [targetDate, 'SCHEDULED']
@@ -202,13 +206,11 @@ class ContributionService {
           });
         }
 
-        // 1. Mark payout cycle record as DISBURSED
         await connection.query(
           'UPDATE payout_cycles SET status = ?, processed_at = CURRENT_TIMESTAMP WHERE id = ?', 
           ['DISBURSED', payout.id]
         );
 
-        // 2. Sync ROSCA queue status to PAID_OUT for recipient
         await connection.query(
           `UPDATE rotation_queue 
            SET status = 'PAID_OUT' 
@@ -217,7 +219,6 @@ class ContributionService {
         );
       }
 
-      // 3. Mark upcoming next scheduled recipients as CURRENT_TURN
       await connection.query(
         `UPDATE rotation_queue rq
          JOIN payout_cycles pc ON rq.member_id = pc.recipient_member_id AND rq.cycle_id = pc.cycle_number

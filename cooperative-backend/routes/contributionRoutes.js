@@ -4,11 +4,16 @@ const router = express.Router();
 const ContributionService = require('../services/contributionService');
 const { requireRole } = require('../middleware/auth');
 
+// Helper to get CAT (Kigali UTC+2) YYYY-MM-DD date string
+const getLocalDateString = (dateObj = new Date()) => {
+  return new Date(dateObj).toLocaleDateString('sv-SE', { timeZone: 'Africa/Kigali' });
+};
+
 // Record daily contribution (5,100 RWF)
 router.post('/pay', requireRole(['MEMBER', 'CHAIRPERSON', 'TREASURER', 'AUDITOR']), async (req, res) => {
   try {
     const { memberId, contributionDate, amount } = req.body;
-    const date = contributionDate || new Date().toISOString().split('T')[0];
+    const date = contributionDate || getLocalDateString();
     const result = await ContributionService.recordMemberContribution(memberId || req.user.id, date, amount || 5100.00);
     res.status(200).json(result);
   } catch (error) {
@@ -20,7 +25,8 @@ router.post('/pay', requireRole(['MEMBER', 'CHAIRPERSON', 'TREASURER', 'AUDITOR'
 router.post('/schedule', requireRole(['CHAIRPERSON', 'TREASURER']), async (req, res) => {
   try {
     const { cycleNumber, startDate } = req.body;
-    const result = await ContributionService.initializePayoutSchedule(cycleNumber || 1, startDate || new Date().toISOString().split('T')[0]);
+    const date = startDate || getLocalDateString();
+    const result = await ContributionService.initializePayoutSchedule(cycleNumber || 1, date);
     res.status(201).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -31,7 +37,7 @@ router.post('/schedule', requireRole(['CHAIRPERSON', 'TREASURER']), async (req, 
 router.post('/cutoff', requireRole(['CHAIRPERSON', 'TREASURER', 'AUDITOR']), async (req, res) => {
   try {
     const { targetDate } = req.body;
-    const date = targetDate || new Date().toISOString().split('T')[0];
+    const date = targetDate || getLocalDateString();
     const result = await ContributionService.executeDaily4PMCutoff(date);
     res.status(200).json(result);
   } catch (error) {

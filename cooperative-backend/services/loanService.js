@@ -2,6 +2,11 @@
 const pool = require("../config/db");
 const LedgerService = require("./ledgerService");
 
+// Helper function to extract CAT (Kigali UTC+2) YYYY-MM-DD date string
+const getLocalDateString = (dateObj = new Date()) => {
+  return new Date(dateObj).toLocaleDateString("sv-SE", { timeZone: "Africa/Kigali" });
+};
+
 class LoanService {
   /**
    * Submits a Tier 1 (Unsecured Micro-Loan) request with 2 guarantors
@@ -17,7 +22,6 @@ class LoanService {
       connection = await pool.getConnection();
       await connection.beginTransaction();
 
-      // Rule Validation
       if (principalAmount < 1 || principalAmount > 300000) {
         throw new Error(
           "Tier 1 loan principal must be between 1 and 300,000 RWF.",
@@ -35,7 +39,6 @@ class LoanService {
         throw new Error("A borrower cannot act as their own guarantor.");
       }
 
-      // Check Guarantor Exposure Ceiling (Max 2 active loans per guarantor)
       for (const guarantorId of guarantorIds) {
         const [activeGuarantees] = await connection.query(
           `SELECT COUNT(*) as count FROM loan_guarantors 
@@ -49,7 +52,6 @@ class LoanService {
         }
       }
 
-      // 1. Insert Loan Record
       const [loanResult] = await connection.query(
         `INSERT INTO loans 
          (borrower_id, loan_type, principal_amount, remaining_principal, monthly_interest_rate, term_months, status)
@@ -58,7 +60,6 @@ class LoanService {
       );
       const loanId = loanResult.insertId;
 
-      // 2. Attach Guarantors (50% guaranteed liability each)
       const guaranteedAmount = principalAmount / 2;
       for (const guarantorId of guarantorIds) {
         await connection.query(
@@ -96,7 +97,6 @@ class LoanService {
       connection = await pool.getConnection();
       await connection.beginTransaction();
 
-      // Rule Validation
       if (principalAmount <= 300000 || principalAmount > 1500000) {
         throw new Error(
           "Tier 2 loan principal must be between 300,001 and 1,500,000 RWF.",
@@ -106,7 +106,6 @@ class LoanService {
         throw new Error("Tier 2 standard term must be between 1 and 6 months.");
       }
 
-      // Collateral Validation (Min 150% valuation)
       const minimumCollateralValue = principalAmount * 1.5;
       if (collateral.estimatedMarketValue < minimumCollateralValue) {
         throw new Error(
@@ -114,7 +113,6 @@ class LoanService {
         );
       }
 
-      // 1. Insert Loan Record
       const [loanResult] = await connection.query(
         `INSERT INTO loans 
          (borrower_id, loan_type, principal_amount, remaining_principal, monthly_interest_rate, term_months, status)
@@ -123,7 +121,6 @@ class LoanService {
       );
       const loanId = loanResult.insertId;
 
-      // 2. Attach Collateral Record
       await connection.query(
         `INSERT INTO loan_collateral 
          (loan_id, asset_type, description, estimated_market_value, document_url, is_verified)
@@ -152,7 +149,7 @@ class LoanService {
   }
 
   /**
-   * Approves a loan request by a Loan Committee member (Chairperson, Treasurer, Auditor)
+   * Approves a loan request by a Loan Committee member
    */
   static async approveLoan(loanId, memberRole) {
     let connection;
@@ -165,7 +162,6 @@ class LoanService {
         [loanId],
       );
       if (loans.length === 0) throw new Error("Loan not found.");
-      const loan = loans[0];
 
       let updateField = "";
       if (memberRole === "CHAIRPERSON")
@@ -183,7 +179,6 @@ class LoanService {
         loanId,
       ]);
 
-      // Check if all 3 approvals are granted
       const [updatedLoan] = await connection.query(
         "SELECT * FROM loans WHERE id = ?",
         [loanId],
@@ -215,7 +210,7 @@ class LoanService {
   }
 
   /**
-   * Disburses funds for an APPROVED loan and records double-entry ledger entries (Principal + 5% Profit)
+   * Disburses funds for an APPROVED loan and records double-entry ledger entries
    */
   static async disburseLoan(loanId) {
     let connection;
@@ -236,17 +231,16 @@ class LoanService {
         );
       }
 
-      // Calculate dates
-      const startDate = new Date().toISOString().split("T")[0];
+      // Format date in CAT time zone to avoid cloud server UTC boundary shift
+      const startDate = getLocalDateString();
       const dueDate = new Date();
       dueDate.setMonth(dueDate.getMonth() + loan.term_months);
-      const dueDateStr = dueDate.toISOString().split("T")[0];
+      const dueDateStr = getLocalDateString(dueDate);
 
       const principalAmount = parseFloat(loan.principal_amount);
       const profitRate = (parseFloat(loan.monthly_interest_rate) || 5.0) / 100;
-      const profitAmount = principalAmount * profitRate; // e.g., 50,000 RWF for 1M RWF principal
+      const profitAmount = principalAmount * profitRate;
 
-      // Update Loan Status
       await connection.query(
         `UPDATE loans 
          SET status = 'ACTIVE', start_date = ?, due_date = ? 
@@ -254,7 +248,6 @@ class LoanService {
         [startDate, dueDateStr, loanId],
       );
 
-      // Activate Guarantors if Tier 1
       if (loan.loan_type === "TIER_1") {
         await connection.query(
           "UPDATE loan_guarantors SET status = 'ACTIVE' WHERE loan_id = ?",
@@ -262,7 +255,6 @@ class LoanService {
         );
       }
 
-      // 1. Debit LOAN_RECEIVABLE & Credit CASH for Principal Disbursement (1,000,000 RWF)
       await LedgerService.recordEntry(connection, {
         debitAccount: "LOAN_RECEIVABLE",
         creditAccount: "CASH",
@@ -272,7 +264,6 @@ class LoanService {
         description: `${loan.loan_type} Principal Disbursement for Borrower Member ID ${loan.borrower_id}`,
       });
 
-      // 2. Debit LOAN_RECEIVABLE & Credit INTEREST_INCOME for 5% Profit Accrual (50,000 RWF)
       await LedgerService.recordEntry(connection, {
         debitAccount: "LOAN_RECEIVABLE",
         creditAccount: "INTEREST_INCOME",
@@ -296,7 +287,7 @@ class LoanService {
   }
 
   /**
-   * Closes a loan and releases its guarantors when fully paid off.
+   * Closes a loan and releases its guarantors when fully paid off
    */
   static async closeLoan(loanId) {
     let connection;
@@ -310,13 +301,11 @@ class LoanService {
       );
       if (loans.length === 0) throw new Error("Loan not found.");
 
-      // 1. Update loan status to CLOSED and clear remaining principal
       await connection.query(
         `UPDATE loans SET status = 'CLOSED', remaining_principal = 0 WHERE id = ?`,
         [loanId],
       );
 
-      // 2. Release associated guarantors by updating status to 'COMPLETED'
       await connection.query(
         `UPDATE loan_guarantors SET status = 'COMPLETED' WHERE loan_id = ?`,
         [loanId],

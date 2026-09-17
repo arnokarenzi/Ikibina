@@ -13,12 +13,11 @@ const COMMITTEE_ROLES = [
   "ADMIN",
 ];
 
-// Helper function to format local YYYY-MM-DD date (prevents UTC timezone shifts)
+// Helper function to format local CAT (Kigali UTC+2) date (prevents Render UTC cloud shifts)
 const getLocalDateString = (dateObj = new Date()) => {
-  const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, "0");
-  const day = String(dateObj.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return new Date(dateObj).toLocaleDateString("sv-SE", {
+    timeZone: "Africa/Kigali",
+  });
 };
 
 // 1. Request Project Initialization (Committee only)
@@ -63,7 +62,7 @@ router.post("/request", requireRole(COMMITTEE_ROLES), async (req, res) => {
   }
 });
 
-// 2. Get Pending Initialization Status & Approvals (Restored for Committee Visibility)
+// 2. Get Pending Initialization Status & Approvals
 router.get("/status", requireRole(COMMITTEE_ROLES), async (req, res) => {
   try {
     const [requests] = await pool.query(
@@ -156,7 +155,7 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
     );
     const totalApprovals = approvalCountRows[0].count;
 
-    // Hard reset triggers on 3rd approval
+    // Hard reset triggers inside a single atomic transaction on 3rd approval
     if (totalApprovals >= 3) {
       await connection.query("SET FOREIGN_KEY_CHECKS = 0");
 
@@ -185,7 +184,7 @@ router.post("/:id/approve", requireRole(COMMITTEE_ROLES), async (req, res) => {
         );
       }
 
-      // Seed payout_cycles starting from local today
+      // Seed payout_cycles using local CAT calendar dates
       if (activeMembers.length > 0) {
         const startDate = new Date();
         const scheduleEntries = [];
@@ -266,4 +265,3 @@ router.post("/:id/cancel", requireRole(COMMITTEE_ROLES), async (req, res) => {
 });
 
 module.exports = router;
-
