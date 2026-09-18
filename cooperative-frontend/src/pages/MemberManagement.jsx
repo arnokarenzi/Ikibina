@@ -1,4 +1,3 @@
-// src/pages/MemberManagement.jsx
 import { useState, useEffect, useCallback } from "react";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
@@ -418,7 +417,17 @@ export default function MemberManagement() {
                               setEditingQueueItem(item);
                               setNewPosition(item.turn_position);
                             }}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-600 rounded-lg text-xs font-medium transition-colors"
+                            disabled={item.status === "PAID_OUT"}
+                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                              item.status === "PAID_OUT"
+                                ? "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
+                                : "bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-600"
+                            }`}
+                            title={
+                              item.status === "PAID_OUT"
+                                ? "Cannot edit turn for paid-out members"
+                                : "Edit Turn"
+                            }
                           >
                             <Edit2 className="w-3.5 h-3.5" /> Edit Turn
                           </button>

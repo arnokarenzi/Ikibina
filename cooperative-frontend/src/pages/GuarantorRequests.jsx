@@ -14,16 +14,17 @@ export default function GuarantorRequests() {
   const [disburseLoading, setDisburseLoading] = useState({});
 
   const userRole = user?.role ? String(user.role).trim().toUpperCase() : "";
+  const userId = user?.id;
   const isCommitteeMember = ["CHAIRPERSON", "TREASURER", "AUDITOR"].includes(
     userRole,
   );
 
   // 1. Declare fetchGuarantorRequests BEFORE useEffect
   const fetchGuarantorRequests = useCallback(async () => {
-    if (!user?.id) return;
+    if (!userId) return;
     setLoading(true);
     try {
-      const res = await api.get(`/loans/guarantor-requests/${user.id}`);
+      const res = await api.get(`/loans/guarantor-requests/${userId}`);
       setRequests(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error("Failed to fetch guarantor requests:", err);
@@ -31,11 +32,15 @@ export default function GuarantorRequests() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [userId]);
 
   // 2. Call inside useEffect after declaration
   useEffect(() => {
-    fetchGuarantorRequests();
+    const timeoutId = setTimeout(() => {
+      fetchGuarantorRequests();
+    }, 0);
+
+    return () => clearTimeout(timeoutId);
   }, [fetchGuarantorRequests]);
 
   const handleAction = async (loanId, action) => {

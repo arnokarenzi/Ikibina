@@ -1,4 +1,3 @@
-// routes/memberRoutes.js
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
@@ -222,6 +221,7 @@ router.post("/rotation/override", async (req, res) => {
         .json({ error: "Valid queue ID and turn position are required." });
     }
 
+    // 1. Fetch target item
     const [targetItem] = await connection.query(
       `SELECT * FROM rotation_queue WHERE id = ?`,
       [queueId],
@@ -233,31 +233,67 @@ router.post("/rotation/override", async (req, res) => {
     }
 
     const oldPosition = targetItem[0].turn_position;
+    const targetStatus = targetItem[0].status;
     const cycleId = targetItem[0].cycle_id;
 
+    // RULE 1: Block override if target member has already been paid out
+    if (targetStatus === "PAID_OUT") {
+      await connection.release();
+      return res.status(400).json({
+        error:
+          "Cannot override turn position for a member who has already been paid out.",
+      });
+    }
+
+    // 2. Fetch occupant at the target position
     const [occupant] = await connection.query(
       `SELECT * FROM rotation_queue WHERE cycle_id = ? AND turn_position = ? AND id != ?`,
       [cycleId, newPosition, queueId],
     );
 
     if (occupant.length > 0) {
+      const occupantStatus = occupant[0].status;
+
+      // RULE 1 (cont): Block override if position occupant is paid out
+      if (occupantStatus === "PAID_OUT") {
+        await connection.release();
+        return res.status(400).json({
+          error:
+            "Cannot swap positions with a member who has already been paid out.",
+        });
+      }
+
+      // RULE 2: Swap turn positions AND statuses between target and occupant
+      // Occupant moves to oldPosition and takes target's status
       await connection.query(
-        `UPDATE rotation_queue SET turn_position = ?, is_manual_override = TRUE WHERE id = ?`,
-        [oldPosition, occupant[0].id],
+        `UPDATE rotation_queue 
+         SET turn_position = ?, status = ?, is_manual_override = TRUE 
+         WHERE id = ?`,
+        [oldPosition, targetStatus, occupant[0].id],
+      );
+
+      // Target moves to newPosition and takes occupant's status
+      await connection.query(
+        `UPDATE rotation_queue 
+         SET turn_position = ?, status = ?, is_manual_override = TRUE 
+         WHERE id = ?`,
+        [newPosition, occupantStatus, queueId],
+      );
+    } else {
+      await connection.query(
+        `UPDATE rotation_queue 
+         SET turn_position = ?, is_manual_override = TRUE 
+         WHERE id = ?`,
+        [newPosition, queueId],
       );
     }
-
-    await connection.query(
-      `UPDATE rotation_queue SET turn_position = ?, is_manual_override = TRUE WHERE id = ?`,
-      [newPosition, queueId],
-    );
 
     await connection.commit();
     connection.release();
 
     res.json({
       success: true,
-      message: "Turn position successfully updated and swapped.",
+      message: "Turn position and status successfully swapped.",
     });
   } catch (error) {
     await connection.rollback();

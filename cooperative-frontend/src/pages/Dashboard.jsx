@@ -53,10 +53,14 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [isCommittee, user?.id]);
+  }, [isCommittee, user]);
 
   useEffect(() => {
-    fetchDashboardData();
+    const timeoutId = setTimeout(() => {
+      fetchDashboardData();
+    }, 0);
+
+    return () => clearTimeout(timeoutId);
   }, [fetchDashboardData]);
 
   const formatCurrency = (val) => `${Number(val || 0).toLocaleString()} RWF`;

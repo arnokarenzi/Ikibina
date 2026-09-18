@@ -28,7 +28,9 @@ export default function LedgerAudit() {
   };
 
   useEffect(() => {
-    fetchLedgerEntries();
+    const timeoutId = setTimeout(fetchLedgerEntries, 0);
+
+    return () => clearTimeout(timeoutId);
   }, []);
 
   const formatCurrency = (val) => `${Number(val || 0).toLocaleString()} RWF`;

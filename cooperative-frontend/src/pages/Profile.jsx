@@ -1,5 +1,5 @@
 // src/pages/Profile.jsx
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -15,9 +15,9 @@ import {
 export default function Profile() {
   const { user } = useAuth();
   const [formData, setFormData] = useState({
-    full_name: "",
-    phone_number: "",
-    email: "",
+    full_name: user?.full_name || "",
+    phone_number: user?.phone_number || "",
+    email: user?.email || "",
     current_password: "",
     new_password: "",
     confirm_password: "",
@@ -35,17 +35,6 @@ export default function Profile() {
     "ADMIN",
   ];
   const isCommitteeMember = COMMITTEE_ROLES.some((r) => userRole.includes(r));
-
-  useEffect(() => {
-    if (user) {
-      setFormData((prev) => ({
-        ...prev,
-        full_name: user.full_name || "",
-        phone_number: user.phone_number || "",
-        email: user.email || "",
-      }));
-    }
-  }, [user]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
